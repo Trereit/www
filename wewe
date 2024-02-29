@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract RandomNumberGame {
+    struct Commitment {
+        bytes32 hash;
+        uint256 revealBlock;
+        uint256 value;
+        bool revealed;
+        uint256 stake;
+    }
+
+    mapping(address => Commitment) public commitments;
+    uint256 public revealWindow = 10; // Number of blocks for reveal phase
+    uint256 public currentRound;
+    uint256 public lastRevealBlock;
+    uint256 public totalStakes;
+    uint256 public winningNumber;
+
+    event CommitmentSubmitted(address indexed sender, bytes32 indexed commitmentHash, uint256 stake);
+    event NumberRevealed(address indexed sender, uint256 indexed number, uint256 stake);
+    event WinnerSelected(address indexed winner, uint256 prize);
+
+    modifier onlyBeforeRevealPhase() {
+        require(block.number < lastRevealBlock + revealWindow, "Reveal phase ended");
+        _;
+    }
+
+    modifier onlyAfterRevealPhase() {
+        require(block.number >= lastRevealBlock + revealWindow, "Reveal phase not ended");
+        _;
+    }
+
+    function submitCommitment(bytes32 _hash) external payable {
+        require(commitments[msg.sender].hash == bytes32(0), "Commitment already made");
+        require(msg.value > 0, "Stake amount must be greater than zero");
+
+        commitments[msg.sender] = Commitment(_hash, block.number + revealWindow, 0, false, msg.value);
+        totalStakes += msg.value;
+        emit CommitmentSubmitted(msg.sender, _hash, msg.value);
+    }
+
+    function revealNumber(uint256 _number, bytes32 _secret) external onlyBeforeRevealPhase {
+        bytes32 hash = keccak256(abi.encodePacked(_number, _secret));
+        require(hash == commitments[msg.sender].hash, "Invalid commitment");
+
+        commitments[msg.sender].value = _number;
+        commitments[msg.sender].revealed = true;
+        lastRevealBlock = block.number;
+        emit NumberRevealed(msg.sender, _number, commitments[msg.sender].stake);
+    }
+
+    function determineWinner() external onlyAfterRevealPhase returns (address) {
+        uint256 randomSeed = uint256(keccak256(abi.encodePacked(blockhash(block.number - 1), currentRound)));
+        winningNumber = randomSeed % 1000;
+
+        address winner;
+
+        for (uint256 i = 0; i < currentRound; i++) {
+            address player = address(bytes32(uint256(uint160(address(this))) + i * 2));
+
+            if (commitments[player].value == winningNumber) {
+                winner = player;
+                break;
+            }
+        }
+
+        if (winner != address(0)) {
+            uint256 prize = totalStakes * 95 / 100; // 95% of total stakes as prize
+            payable(winner).transfer(prize);
+            emit WinnerSelected(winner, prize);
+        }
+
+        currentRound++;
+        totalStakes = 0;
+        return winner;
+    }
+
+    function emergencyWithdraw() external {
+        require(msg.sender == tx.origin, "Only externally-owned accounts can withdraw");
+        selfdestruct(payable(msg.sender));
+    }
+}
